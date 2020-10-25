@@ -5,6 +5,11 @@
 import math
 from operator import itemgetter
 import time
+import random
+random.seed(3)
+
+COMPUTE_ONCE = 7.152557373046875e-07
+FILLER_COMPUTE = 1
 
 # -- These strings are for generating .cpp code for simgrid --
 maincode = ""
@@ -20,58 +25,144 @@ remote_a_code = []
 device_g_code = []
 device_a_code = []
 
+# -- Counters to manage get_async() fence prior to execution
+hgetcount = 0
+dgetcount = 0
+
+prevhget = 0
+prevdget = 0
+
+# These counters are for priming the data sends and signal reads
+numHSig = 0
+#numRSig = 0
+numDSig = 0
+numHData = 0
+numRData = 0
+numDData = 0
+
+# -- counters to manage proper code interleaving
+hostrecurcount = []
+remoterecurcount = []
+devicerecurcount = []
+
+# find max item in an arbitary depth of list of lists
+def get_max(my_list):
+    m = None
+    for item in my_list:
+        if isinstance(item, list):
+            item = get_max(item)
+        if not m or m < item:
+            m = item
+    return m
+
 # Generate sample graph using Adjacency List representation
 # outgoing: outgoing edges per vertex
 # incoming: incoming edges per vertex
-def sampleGraph():
-    data = [[1,0],
-            [2,0],
-            [3,0],
-            [4,0],
-            [5,0],
-            [6,0],
-            [7,0],
-            [8,0],
-            [9,0],
-            [0,10],
+def sampleGraph(name="small", size_chunk=100):
+
+    if name == "large":
+        data = []
+        
+        # chunk 1
+        for i in range(1, size_chunk):
+            data.append([i, 0])
+            data.append([i, (i+1)%size_chunk])
+        data.append([0, 0+1])
+        data.append([0, size_chunk])
+
+        # chunk 2
+        for i in range(size_chunk+1, size_chunk*2):
+            data.append([i, size_chunk])
+            data.append([i, ((i+1)%size_chunk)+size_chunk])
+        data.append([size_chunk, size_chunk+1])
+        data.append([size_chunk, size_chunk*2])
+
+        # chunk 3
+        for i in range((size_chunk*2)+1, size_chunk*3):
+            data.append([i, size_chunk*2])
+            data.append([i, ((i+1)%size_chunk)+(size_chunk*2)])
+        data.append([size_chunk*2, (size_chunk*2)+1])
+        data.append([size_chunk*2, 0])
+
+    elif name == "count":
+        data = []
+        for i in range(size_chunk):
+            for j in range(i):
+                data.append([i, j])
+            data.append([i, (i+1)%size_chunk])
+
+    elif name == "v2":
+        data = []
+        for i in range(1, size_chunk):
+            data.append([i, 0])
+            if i < size_chunk-1:
+                data.append([i, i+1])
+            else:
+                data.append([i,1])
+        data.append([0, 1])
             
-            [11,10],
-            [12,10],
-            [13,10],
-            [14,10],
-            [15,10],
-            [16,10],
-            [17,10],
-            [18,10],
-            [19,10],
-            [10,20],
-
-            [21,20],
-            [22,20],
-            [23,20],
-            [24,20],
-            [25,20],
-            [26,20],
-            [27,20],
-            [28,20],
-            [29,20],
-            [20,0]]
-
-    """
-            [0,1],
-            [1,2],
-            [2,3],
-            [3,4],
-            [4,5],
-            [5,6],
-            [6,7],
-            [7,8],
-            [8,1]]
-    """
-    data = sorted(data, key=itemgetter(1))
-
-    numVertices = 30
+    elif name == "small":
+        data = [[1,0],
+                [2,0],
+                [3,0],
+                [4,0],
+                [5,0],
+                [6,0],
+                [7,0],
+                [8,0],
+                [9,0],
+                [0,10],
+                
+                [11,10],
+                [12,10],
+                [13,10],
+                [14,10],
+                [15,10],
+                [16,10],
+                [17,10],
+                [18,10],
+                [19,10],
+                [10,20],
+                
+                [21,20],
+                [22,20],
+                [23,20],
+                [24,20],
+                [25,20],
+                [26,20],
+                [27,20],
+                [28,20],
+                [29,20],
+                [20,0]]
+    else:
+        data = [[1,0],
+                [2,0],
+                [3,0],
+                [4,0],
+                [5,0],
+                [6,0],
+                [7,0],
+                [8,0],
+                [0,1],
+                [1,2],
+                [2,3],
+                [3,4],
+                [4,5],
+                [5,6],
+                [6,7],
+                [7,8],
+                [8,1]]
+        
+    #data = sorted(data, key=itemgetter(1))
+    random.shuffle(data)
     
+    # -- Determine number of vertices in graph --
+    #numVertices = 30
+    #if name == "large":
+    #    numVertices = size_chunk*3
+    #else:
+    numVertices = get_max(data) + 1
+
     return data, numVertices
 
 # Generate list for number of outgoing edges per node
@@ -83,7 +174,7 @@ def genOutgoing(data, numVertices):
     for e in data:
         numOutgoing[e[0]] += 1
 
-    print(numOutgoing)
+    #print(numOutgoing)
     return numOutgoing
 
 # Partition given graph across 3 nodes: main, remote, device
@@ -101,6 +192,11 @@ def partitionGraph(data, numVertices, main, remote, device):
     remoteCut = data[lenMain : lenMain + lenRemote]
     deviceCut = data[lenMain + lenRemote : lenMain + lenRemote + lenDevice]
 
+    # remember to sort by destination! PR() depends on this
+    mainCut = sorted(mainCut, key=itemgetter(1))
+    remoteCut = sorted(remoteCut, key=itemgetter(1))
+    deviceCut = sorted(deviceCut, key=itemgetter(1))
+    
     MR_shared = []
     RD_shared = []
     MD_shared = []
@@ -152,9 +248,9 @@ def partitionGraph(data, numVertices, main, remote, device):
             DM_shared.append(0)
     """
     
-    print(MR_shared)
-    print(RD_shared)
-    print(MD_shared)
+    #print(MR_shared)
+    #print(RD_shared)
+    #print(MD_shared)
     
     return mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared
 
@@ -162,117 +258,186 @@ def writeDataTransfers_g(HR_count, RH_count, HD_count, DH_count, DR_count, RD_co
     global host_g_code
     global remote_g_code
     global device_g_code
+    global hgetcount
+    global dgetcount
+    global prevhget
+    global prevdget
 
+    #global numHSig
+    #global numRSig
+    #global numDSig
+    global numHData
+    global numRData
+    global numDData
+    
     # -- Assign data transfers --
     while HR_count > 0:
-        data_size = max(66, HR_count*4)
-        HR_count = 0
-        host_g_code[-1] += str("  host_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        remote_g_code[-1] += str("  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from host\");\n")
-        remote_g_code[-1] += str("  data = static_cast<double*>(host_data_mailbox->get());\n")
-        remote_g_code[-1] += str("  delete data;\n")
+        #data_size = max(66, HR_count*4)
+        #HR_count = 0
+        data_size = 66
+        HR_count -= 1
+        #host_g_code[-1] += "  host_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        numHData += 1
+        remote_g_code[-1] += "  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from host\");\n"
+        remote_g_code[-1] += "  host_data_mailbox->get_async(&data);\n"
+        print("WARNING: UNSUPPORTED STATE")
+        #hgetcount += 1
     while RH_count > 0:
-        data_size = max(66, RH_count*4)
-        RH_count = 0
-        remote_g_code[-1] += str("  remote_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        host_g_code[-1] += str("  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from remote\");\n")
-        host_g_code[-1] += str("  data = static_cast<double*>(remote_data_mailbox->get());\n")
-        host_g_code[-1] += str("  delete data;\n")
+        #data_size = max(66, RH_count*4)
+        #RH_count = 0
+        data_size = 66
+        RH_count -= 1
+        #remote_g_code[-1] += "  remote_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        numRData += 1
+        host_g_code[-1] += "  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from remote\");\n"
+        host_g_code[-1] += "  simgrid::s4u::CommPtr get" + str(hgetcount) + " = remote_data_mailbox->get_async(&data);\n"
+        hgetcount += 1
     while HD_count > 0:
-        data_size = max(66, HD_count*4)
-        HD_count = 0
-        host_g_code[-1] += str("  host_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        device_g_code[-1] += str("  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from host\");\n")
-        device_g_code[-1] += str("  data = static_cast<double*>(host_data_mailbox->get());\n")
-        device_g_code[-1] += str("  delete data;\n")
+        #data_size = max(66, HD_count*4)
+        #HD_count = 0
+        data_size = 66
+        HD_count -= 1
+        #host_g_code[-1] += "  host_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        numHData += 1
+        device_g_code[-1] += "  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from host\");\n"
+        device_g_code[-1] += "  simgrid::s4u::CommPtr get" + str(dgetcount) + " = host_data_mailbox->get_async(&data);\n"
+        dgetcount += 1
     while DH_count > 0:
-        data_size = max(66, DH_count*4)
-        DH_count = 0
-        device_g_code[-1] += str("  device_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        host_g_code[-1] += str("  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from device\");\n")
-        host_g_code[-1] += str("  data = static_cast<double*>(device_data_mailbox->get());\n")
-        host_g_code[-1] += str("  delete data;\n")
+        #data_size = max(66, DH_count*4)
+        #DH_count = 0
+        data_size = 66
+        DH_count -= 1
+        #device_g_code[-1] += "  device_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        numDData += 1
+        host_g_code[-1] += "  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from device\");\n"
+        host_g_code[-1] += "  simgrid::s4u::CommPtr get" + str(hgetcount) + " = device_data_mailbox->get_async(&data);\n"
+        hgetcount += 1
     while DR_count > 0:
-        data_size = max(66, DR_count*4)
-        DR_count = 0
-        device_g_code[-1] += str("  device_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        remote_g_code[-1] += str("  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from device\");\n")
-        remote_g_code[-1] += str("  data = static_cast<double*>(device_data_mailbox->get());\n")
-        remote_g_code[-1] += str("  delete data;\n")
+        #data_size = max(66, DR_count*4)
+        #DR_count = 0
+        data_size = 66
+        DR_count -= 1
+        #device_g_code[-1] += "  device_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        numDData += 1
+        remote_g_code[-1] += "  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from device\");\n"
+        remote_g_code[-1] += "  device_data_mailbox->get_async(&data);\n"
+        print("WARNING: UNSUPPORTED STATE")
+        #hgetcount += 1
     while RD_count > 0:
-        data_size = max(66, RD_count*4)
-        RD_count = 0
-        remote_g_code[-1] += str("  remote_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        device_g_code[-1] += str("  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from remote\");\n")
-        device_g_code[-1] += str("  data = static_cast<double*>(remote_data_mailbox->get());\n")
-        device_g_code[-1] += str("  delete data;\n")
+        #data_size = max(66, RD_count*4)
+        #RD_count = 0
+        data_size = 66
+        RD_count -= 1
+        #remote_g_code[-1] += "  remote_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        numRData += 1
+        device_g_code[-1] += "  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from remote\");\n"
+        device_g_code[-1] += "  simgrid::s4u::CommPtr get" + str(dgetcount) + " = remote_data_mailbox->get_async(&data);\n"
+        dgetcount += 1
 
 def writeDataTransfers_a(HR_count, RH_count, HD_count, DH_count, DR_count, RD_count):
     global host_a_code
     global remote_a_code
     global device_a_code
+    global hgetcount
+    global dgetcount
+    global prevhget
+    global prevdget
     
     # -- Assign data transfers --
     while HR_count > 0:
-        data_size = max(66, HR_count*4)
-        HR_count = 0
-        host_a_code[-1] += str("  host_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        remote_a_code[-1] += str("  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from host\");\n")
-        remote_a_code[-1] += str("  data = static_cast<double*>(host_data_mailbox->get());\n")
-        remote_a_code[-1] += str("  delete data;\n")
+        #data_size = max(66, HR_count*4)
+        #HR_count = 0
+        data_size = 66
+        HR_count -= 1
+        host_a_code[-1] += "  host_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        remote_a_code[-1] += "  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from host\");\n"
+        remote_a_code[-1] += "  host_data_mailbox->get_async(&data);\n"
+        print("WARNING: UNSUPPORTED STATE")
+        #hgetcount += 1
     while RH_count > 0:
-        data_size = max(66, RH_count*4)
-        RH_count = 0
-        remote_a_code[-1] += str("  remote_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        host_a_code[-1] += str("  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from remote\");\n")
-        host_a_code[-1] += str("  data = static_cast<double*>(remote_data_mailbox->get());\n")
-        host_a_code[-1] += str("  delete data;\n")
+        #data_size = max(66, RH_count*4)
+        #RH_count = 0
+        data_size = 66
+        RH_count -= 1
+        remote_a_code[-1] += "  remote_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        host_a_code[-1] += "  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from remote\");\n"
+        host_a_code[-1] += "  simgrid::s4u::CommPtr get" + str(hgetcount) + " = remote_data_mailbox->get_async(&data);\n"
+        hgetcount += 1
     while HD_count > 0:
-        data_size = max(66, HD_count*4)
-        HD_count = 0
-        host_a_code[-1] += str("  host_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        device_a_code[-1] += str("  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from host\");\n")
-        device_a_code[-1] += str("  data = static_cast<double*>(host_data_mailbox->get());\n")
-        device_a_code[-1] += str("  delete data;\n")
+        #data_size = max(66, HD_count*4)
+        #HD_count = 0
+        data_size = 66
+        HD_count -= 1
+        host_a_code[-1] += "  host_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        device_a_code[-1] += "  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from host\");\n"
+        device_a_code[-1] += "  simgrid::s4u::CommPtr get" + str(dgetcount) + " = host_data_mailbox->get_async(&data);\n"
+        dgetcount += 1
     while DH_count > 0:
-        data_size = max(66, DH_count*4)
-        DH_count = 0
-        device_a_code[-1] += str("  device_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        host_a_code[-1] += str("  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from device\");\n")
-        host_a_code[-1] += str("  data = static_cast<double*>(device_data_mailbox->get());\n")
-        host_a_code[-1] += str("  delete data;\n")
+        #data_size = max(66, DH_count*4)
+        #DH_count = 0
+        data_size = 66
+        DH_count -= 1
+        device_a_code[-1] += "  device_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        host_a_code[-1] += "  XBT_INFO(\"host receive " + str(data_size) + " bytes of data from device\");\n"
+        host_a_code[-1] += "  simgrid::s4u::CommPtr get" + str(hgetcount) + " = device_data_mailbox->get_async(&data);\n"
+        hgetcount += 1
     while DR_count > 0:
-        data_size = max(66, DR_count*4)
-        DR_count = 0
-        device_a_code[-1] += str("  device_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        remote_a_code[-1] += str("  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from device\");\n")
-        remote_a_code[-1] += str("  data = static_cast<double*>(device_data_mailbox->get());\n")
-        remote_a_code[-1] += str("  delete data;\n")
+        #data_size = max(66, DR_count*4)
+        #DR_count = 0
+        data_size = 66
+        DR_count -= 1
+        device_a_code[-1] += "  device_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        remote_a_code[-1] += "  XBT_INFO(\"remote recieve " + str(data_size) + " bytes of data from device\");\n"
+        remote_a_code[-1] += "  device_data_mailbox->get_async(&data);\n"
+        print("WARNING: UNSUPPORTED STATE")
+        #hgetcount += 1
     while RD_count > 0:
-        data_size = max(66, RD_count*4)
-        RD_count = 0
-        remote_a_code[-1] += str("  remote_data_mailbox->put(new double(dummy_cost), " + str(data_size) + ");\n")
-        device_a_code[-1] += str("  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from remote\");\n")
-        device_a_code[-1] += str("  data = static_cast<double*>(remote_data_mailbox->get());\n")
-        device_a_code[-1] += str("  delete data;\n")
+        #data_size = max(66, RD_count*4)
+        #RD_count = 0
+        data_size = 66
+        RD_count -= 1
+        remote_a_code[-1] += "  remote_data_mailbox->put_async(dummy_data, " + str(data_size) + ");\n"
+        device_a_code[-1] += "  XBT_INFO(\"device receive " + str(data_size) + " bytes of data from remote\");\n"
+        device_a_code[-1] += "  simgrid::s4u::CommPtr get" + str(dgetcount) + " = remote_data_mailbox->get_async(&data);\n"
+        dgetcount += 1
 
 # recursive portion of pagerank algorithm
-def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType):
+def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry):
     global host_g_code
     global host_a_code
     global remote_g_code
     global remote_a_code
     global device_g_code
     global device_a_code
+    global hgetcount
+    global dgetcount
+    global prevhget
+    global prevdget
+    global hostrecurcount
+    global remoterecurcount
+    global devicerecurcount
 
+    global numHSig
+    #global numRSig
+    global numDSig
+    global numHData
+    global numRData
+    global numDData
+    
     host_g_code.append("")
     host_a_code.append("")
     remote_g_code.append("")
     remote_a_code.append("")
     device_g_code.append("")
     device_a_code.append("")
-    
-    
+
+    if nodeType == "host":
+        hostrecurcount[-1] += 1
+    elif nodeType == "remote":
+        remoterecurcount[-1] += 1
+    elif nodeType == "device":
+        devicerecurcount[-1] += 1
+        
     curr = graph[startIdx][1]
     tot = 0
     idx = startIdx
@@ -285,6 +450,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
     RD_count = 0
 
     compute_time = 0
+    num_computes = 0
     
     print("Accumulating for vertex {}".format(curr))
     while(idx < len(graph) and graph[idx][1] == curr):
@@ -294,9 +460,13 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                 if cached_device[graph[idx][0]] != 'I': # only send coherence signals for SHARED DATA
                     print("\tTransition vertex {} from 'I' to 'S' state. Send signal HOST->DEVICE".format(graph[idx][0])) ## force all device M to S
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
-                    host_g_code[-1] += "  device_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    device_g_code[-1] += "  signal = static_cast<double*>(device_sig_mailbox->get()); //1\n"
-                    device_g_code[-1] += "  delete signal;\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
+                        host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numDSig += 1
+                    #else:
+                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numDSig += 1
                 else:
                     print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
 
@@ -317,9 +487,13 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                 if cached_device[graph[idx][0]] != 'I': # only send coherence signals for SHARED DATA
                     print("\tTransition vertex {} from 'I' to 'S' state. Send signal HOST->DEVICE".format(graph[idx][0])) ## force all device M to S
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
-                    host_g_code[-1] += "  device_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    device_g_code[-1] += "  signal = static_cast<double*>(device_sig_mailbox->get()) //2;\n"
-                    device_g_code[-1] += "  delete signal;\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
+                        host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numDSig += 1
+                    #else:
+                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numDSig += 1
                 else:
                     print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
 
@@ -342,9 +516,13 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                 if cached_host[graph[idx][0]] != 'I' or cached_remote[graph[idx][0]] != 'I':
                     print("\tTransition vertex {} from 'I' to 'S' state. Send signal DEVICE->HOST".format(graph[idx][0])) ## force all other devices and host M to S
                     device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
-                    device_g_code[-1] += "  host_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    host_g_code[-1] += "  signal = static_cast<double*>(host_sig_mailbox->get());\n"
-                    host_g_code[-1] += "  delete signal;\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_host":
+                        device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numHSig += 1
+                    #else:
+                    #    device_g_code[-1] += "  host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numHSig += 1
                 else:
                     print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
                     
@@ -362,7 +540,8 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
         tot += ranks[graph[idx][0]] / numOutgoing[graph[idx][0]]
         idx += 1
         compute_time += (time.time() - startTime)
-
+        num_computes += 1
+        
     # -- Assign data transfers --
     writeDataTransfers_g(HR_count, RH_count, HD_count, DH_count, DR_count, RD_count)
     HR_count = 0
@@ -381,16 +560,24 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                     print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
                 else:
                     print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal HOST->DEVICE".format(curr))
-                    host_a_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
-                    host_a_code[-1] += "  device_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    device_a_code[-1] += "  signal = static_cast<double*>(device_sig_mailbox->get()); //3\n"
-                    device_a_code[-1] += "  delete signal;\n"
+                    host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
+                        host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numDSig += 1
+                    #else:
+                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numDSig += 1
             else: # 'I' state
                 print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE and wait for response".format(curr))
-                host_a_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
-                host_a_code[-1] += "  device_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                device_a_code[-1] += "  signal = static_cast<double*>(device_sig_mailbox->get()); //4\n"
-                device_a_code[-1] += "  delete signal;\n"
+                host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
+                if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
+                    host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                    host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                    numDSig += 1
+                #else:
+                #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                #numDSig += 1
                 if cached_remote[curr] == 'M':
                     print("\tRemote now at 'I' state. Send data REMOTE->HOST")
                     RH_count += 1
@@ -416,17 +603,25 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                     print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
                 else:
                     print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal HOST->DEVICE".format(curr))
-                    host_a_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
-                    host_a_code[-1] += "  device_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    device_a_code[-1] += "  signal = static_cast<double*>(device_sig_mailbox->get()); //5\n"
-                    device_a_code[-1] += "  delete signal;\n"
+                    host_g_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
+                        host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numDSig += 1
+                    #else:
+                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numDSig += 1
             else: # 'I' state
                 if cached_host[curr] == 'I':
                     print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE".format(curr))
-                    host_a_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
-                    host_a_code[-1] += "  device_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    device_a_code[-1] += "  signal = static_cast<double*>(device_sig_mailbox->get()); //6\n"
-                    device_a_code[-1] += "  delete signal;\n"
+                    host_g_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
+                        host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numDSig += 1
+                    #else:
+                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numDSig += 1
                     print(cached_host)
                 else:
                     print("\tTransition vertex {} from 'I' to 'M' state.".format(curr))
@@ -457,16 +652,24 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                     print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
                 else:
                     print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal DEVICE->HOST".format(curr))
-                    device_a_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
-                    device_a_code[-1] += "  host_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                    host_a_code[-1] += "  signal = static_cast<double*>(host_sig_mailbox->get());\n"
-                    host_a_code[-1] += "  delete signal;\n"
+                    device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
+                    if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_host":
+                        device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                        device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        numHSig += 1
+                    #else:
+                    #    device_g_code[-1] += "  host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                    #numHSig += 1
             else: # 'I' state
                 print("\tTransition vertex {} from 'I' to 'M' state. Send signal DEVICE->HOST".format(curr))
-                device_a_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
-                device_a_code[-1] += "  host_sig_mailbox->put(new double(dummy_cost), SNOOP_SIZE);\n"
-                host_a_code[-1] += "  signal = static_cast<double*>(host_sig_mailbox->get());\n"
-                host_a_code[-1] += "  delete signal;\n"
+                device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
+                if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_host":
+                    device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
+                    device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                    numHSig += 1
+                #else:
+                #    device_g_code[-1] += "  host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
+                #numHSig += 1
                 if cached_host[curr] == 'M':
                     print("\tHost now at 'I' state. Send data HOST->DEVICE") ### this and below are potential gridlock point
                     HD_count += 1
@@ -493,31 +696,59 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
         ranks[curr] += tot
     done[curr] = True
     compute_time += (time.time() - startTime)
-
-    # -- Assign compute execution --
-    cost = compute_time * 10e9
-    if nodeType == "host":
-        host_a_code[-1] += "\n  XBT_INFO(\"host perform computation\");\n"
-        host_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(cost) + ");\n\n"
-    elif nodeType == "remote":
-        host_a_code[-1] += "\n  XBT_INFO(\"host perform computation on remote's behalf\");\n"
-        host_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(cost) + ");\n\n"
-    elif nodeType == "device":
-        device_a_code[-1] += "\n  XBT_INFO(\"device perform computation\");\n"
-        device_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(cost) + ");\n\n"
-
-    # -- Assign data transfers and compute --
-    writeDataTransfers_a(HR_count, RH_count, HD_count, DH_count, DR_count, RD_count)
+    num_computes += 1
     
-    for out in range(idx,len(graph)):
+    # -- Assign data transfers and compute --
+    writeDataTransfers_g(HR_count, RH_count, HD_count, DH_count, DR_count, RD_count)
+    
+    # -- Assign compute execution --
+    #cost = compute_time * 10e9
+    cost = num_computes * COMPUTE_ONCE * 10e9
+    if nodeType == "host":
+        host_a_code[-1] += "\n"
+        for i in range(prevhget, hgetcount):
+            host_a_code[-1] += "  get" + str(i) + "->wait();\n"
+        prevhget = hgetcount;
+        #host_a_code[-1] += "  simgrid::s4u::this_actor::execute(1); // to avoid segfault\n  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
+        host_a_code[-1] += "  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
+        #host_a_code[-1] += "  pending_comms.clear();\n"
+        host_a_code[-1] += "\n  XBT_INFO(\"host perform computation\");\n"
+        host_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(int(cost)) + ");\n\n"
+    elif nodeType == "remote":
+        host_a_code[-1] += "\n"
+        for i in range(prevhget, hgetcount):
+            host_a_code[-1] += "\n  get" + str(i) + "->wait();\n"
+        prevhget = hgetcount;
+        #host_a_code[-1] += "  simgrid::s4u::this_actor::execute(1); // to avoid segfault\n  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
+        host_a_code[-1] += "  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
+        #host_a_code[-1] += "  pending_comms.clear();\n"
+        host_a_code[-1] += "\n  XBT_INFO(\"host perform computation on remote's behalf\");\n"
+        host_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(int(cost)) + ");\n\n"
+    elif nodeType == "device":
+        device_a_code[-1] += "\n"
+        for i in range(prevdget, dgetcount):
+            device_a_code[-1] += "\n  get" + str(i) + "->wait();\n"
+        prevdget = dgetcount;
+        #device_a_code[-1] += "  simgrid::s4u::this_actor::execute(1); // to avoid segfault\n  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
+        device_a_code[-1] += "  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
+        #device_a_code[-1] += "  pending_comms.clear();\n"
+        device_a_code[-1] += "\n  XBT_INFO(\"device perform computation\");\n"
+        device_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(int(cost)) + ");\n\n"
+
+    #for out in range(idx,len(graph)):
+    for out in range(0,len(graph)):
         if graph[out][0] == curr and not done[graph[out][1]]:
             print("Scatter execution to vertex {}".format(graph[out][1]))
-            ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType)
-
+            ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry)
+    for out in range(0,len(graph)):
+        if not done[graph[out][1]]:
+             print("Scatter chain broken, searching for more unfinished vertices... {}".format(graph[out][1]))
+             ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry)
+            
     return ranks, working, cached_host, cached_remote, cached_device
 
 # apply pagerank algorithm
-def PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, nodeType, graph, numOutgoing, maxIter):
+def PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, graph, numOutgoing, maxIter):
 
     # check for empty graph
     if len(graph) == 0:
@@ -530,26 +761,29 @@ def PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_dev
     
     # assuming graph is sorted by DESTINATION ...
     startIdx = 0
-    ranks, working, cached_host, cached_remote, cached_device = PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType)
+    ranks, working, cached_host, cached_remote, cached_device = PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry)
 
     return ranks, working, cached_host, cached_remote, cached_device
 
-def generatePrefix():
+def generatePrefix(coherenceSymmetry):
     global maincode
     global hostcode
     global remotecode
     global devicecode
     
-    maincode += "/*AUTOMATICALLY GENERATED CODE*/\n\n#include <simgrid/s4u.hpp>\n\nXBT_LOG_NEW_DEFAULT_CATEGORY(s4u_app_masterworker, \"Messages specific for this example\");\n\n"
-    maincode += "#define FLIT_SIZE 64\n#define SNOOP_SIZE 64\n#define dummy_cost 10\n\n"
+    maincode += "/*AUTOMATICALLY GENERATED CODE*/\n/*Coherence symmetry mode: "
+    maincode += coherenceSymmetry + "*/\n\n#include <simgrid/s4u.hpp>\n\nXBT_LOG_NEW_DEFAULT_CATEGORY(s4u_app_masterworker, \"Messages specific for this example\");\n\n"
+    maincode += "#define FLIT_SIZE 64\n#define SNOOP_SIZE 64\n\n"
+    maincode += "simgrid::s4u::BarrierPtr barrier = simgrid::s4u::Barrier::create(3);\n"
+    maincode += "double dummy_cost = 10;\ndouble* dummy_data = &dummy_cost;\n\n"
     maincode += "void checkAndRec(simgrid::s4u::Mailbox* mailbox) {\n  if (!mailbox->empty()) {\n    double* signal = static_cast<double*>(mailbox->get());\n    delete signal;\n  }\n}\n\n"
-    maincode += "void checkAndSend(simgrid::s4u::Mailbox* mailbox) {\n  if (!mailbox->empty()) {\n    mailbox->put(new double(dummy_cost), FLIT_SIZE);\n  }\n}\n\n"
+    maincode += "void checkAndSend(simgrid::s4u::Mailbox* mailbox) {\n  if (!mailbox->empty()) {\n    mailbox->put_async(dummy_data, FLIT_SIZE);\n  }\n}\n\n"
 
-    hostcode += "static void host(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The host expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n\ndouble* data = NULL;\ndouble* signal = NULL;\n\n"
+    hostcode += "static void host(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The host expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n  std::vector<simgrid::s4u::CommPtr> pending_comms;\n  std::vector<simgrid::s4u::CommPtr> noncrit_comms;\n\n  void* data = NULL;\n  void* signal = NULL;\n\n"
 
-    remotecode += "static void remote(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The remote expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n\ndouble* data = NULL;\ndouble* signal = NULL;\n\n"
+    remotecode += "static void remote(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The remote expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n  std::vector<simgrid::s4u::CommPtr> pending_comms;\n  std::vector<simgrid::s4u::CommPtr> noncrit_comms;\n\n  void* data = NULL;\n  void* signal = NULL;\n\n"
 
-    devicecode += "static void device(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The device expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n\ndouble* data = NULL;\ndouble* signal = NULL;\n\n"
+    devicecode += "static void device(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The device expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n  std::vector<simgrid::s4u::CommPtr> pending_comms;\n  std::vector<simgrid::s4u::CommPtr> noncrit_comms;\n\n  void* data = NULL;\n  void* signal = NULL;\n\n"
 
 def generateSuffix():
     global maincode
@@ -564,6 +798,79 @@ def generateSuffix():
     global device_g_code
     global device_a_code
 
+    global hostrecurcount
+    global remoterecurcount
+    global devicerecurcount
+
+    global numHSig
+    #global numRSig
+    global numDSig
+    global numHData
+    global numRData
+    global numDData
+    
+    print("Counts: ")
+    print(hostrecurcount)
+    print(remoterecurcount)
+    print(devicerecurcount)
+    #print(host_a_code);
+    #print(remote_a_code);
+    #print(device_a_code);
+
+    # Prime the signal reads and data sends
+    data_size = 66
+    sf_avoid_period = 4
+    for i in range(numHSig):
+        hostcode += "  noncrit_comms.push_back(host_sig_mailbox->get_async(&signal));\n"
+        #if i % sf_avoid_period == 0 and i != 0:
+        #    hostcode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+    for i in range(numHSig, numHData + numHSig):
+        hostcode += "  noncrit_comms.push_back(host_data_mailbox->put_async(dummy_data, " + str(data_size) + "));\n"
+        #if i % sf_avoid_period == 0 and i != 0:
+        #    hostcode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+    for i in range(numDSig):
+        devicecode += "  noncrit_comms.push_back(device_sig_mailbox->get_async(&signal));\n"
+        #if i % sf_avoid_period == 0 and i != 0:
+        #    devicecode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+    for i in range(numDSig, numDData + numDSig):
+        devicecode += "  noncrit_comms.push_back(device_data_mailbox->put_async(dummy_data, " + str(data_size) + "));\n"
+        #if i % sf_avoid_period == 0 and i != 0:
+        #    devicecode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+    for i in range(numRData):
+        remotecode += "  noncrit_comms.push_back(remote_data_mailbox->put_async(dummy_data, " + str(data_size) + "));\n"
+        #if i % sf_avoid_period == 0:
+        #    remotecode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+        
+    for iteration in range(len(hostrecurcount)):
+        if iteration == 0:
+            offset = 0
+        else:
+            offset = sum(hostrecurcount[:iteration]) + sum(remoterecurcount[:iteration]) + sum(devicerecurcount[:iteration])
+        for i in range(max([hostrecurcount[iteration], remoterecurcount[iteration], devicerecurcount[iteration]])):
+            if i < hostrecurcount[iteration]:
+                hostcode += host_g_code[i + 0 + offset]
+                remotecode += remote_g_code[i + 0 + offset]
+                devicecode += device_g_code[i + 0 + offset]
+                #print(i + offset)
+            if i < remoterecurcount[iteration]:
+                hostcode += host_g_code[i + hostrecurcount[iteration] + offset]
+                remotecode += remote_g_code[i + hostrecurcount[iteration] + offset]
+                devicecode += device_g_code[i + hostrecurcount[iteration] + offset]
+                #print(i+hostrecurcount[iteration] + offset)
+            if i < devicerecurcount[iteration]:
+                hostcode += host_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+                remotecode += remote_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+                devicecode += device_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+                #print(i+hostrecurcount[iteration]+remoterecurcount[iteration] + offset)
+
+            if i < hostrecurcount[iteration]:
+                hostcode += host_a_code[i + 0 + offset]
+            if i < remoterecurcount[iteration]:
+                remotecode += remote_a_code[i + hostrecurcount[iteration] + offset]
+            if i < devicerecurcount[iteration]:
+                devicecode += device_a_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+    
+    """
     for i in range(len(host_g_code)):
         hostcode += host_g_code[i]
         hostcode += host_a_code[i]
@@ -571,9 +878,13 @@ def generateSuffix():
         remotecode += remote_a_code[i]
         devicecode += device_g_code[i]
         devicecode += device_a_code[i]
+    """
 
+    hostcode += "\n  XBT_INFO(\"Host waiting on the barrier\");\n  simgrid::s4u::Comm::wait_all(&noncrit_comms);\n  barrier->wait();\n"
     hostcode += "  XBT_INFO(\"Host exiting.\");\n}"
+    remotecode += "\n  XBT_INFO(\"Remote waiting on the barrier\");\n  simgrid::s4u::Comm::wait_all(&noncrit_comms);\n  barrier->wait();\n"
     remotecode += "  XBT_INFO(\"Remote exiting.\");\n}"
+    devicecode += "\n  XBT_INFO(\"Device waiting on the barrier\");\n  simgrid::s4u::Comm::wait_all(&noncrit_comms);\n  barrier->wait();\n"
     devicecode += "  XBT_INFO(\"Device exiting.\");\n}"
 
     maincode += "\n"
@@ -589,18 +900,30 @@ def generateSuffix():
     f.close()
     
 def main():
+    global hostrecurcount
+    global remoterecurcount
+    global devicerecurcount
 
-    # start generating .cpp file
-    generatePrefix()
+    #coherenceSymmetry = "NAH"
+    coherenceSymmetry = "sym"
+    #coherenceSymmetry = "asym_host"
+    #coherenceSymmetry = "asym_dev"
     
-    graph, numVertices = sampleGraph()
+    # start generating .cpp file
+    generatePrefix(coherenceSymmetry)
+    
+    graph, numVertices = sampleGraph("large", 100)
+    #print(graph)
     numOutgoing = genOutgoing(graph, numVertices)
 
     # -- Different workload cuts: evenly distributed, all host, all remote, all device --
     #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 1.0/3.0, 1.0/3.0, 1.0/3.0)
+    mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 1.0/2.0, 0.0, 1.0/2.0)
     #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 1.0, 0, 0)
     #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 0, 1.0, 0)
-    mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 0, 0, 1.0)
+    #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 0, 0, 1.0)
+
+    print(mainCut)
     
     # initial ranks
     initRank = 1.0 / numVertices
@@ -619,20 +942,23 @@ def main():
         
     numIter = 1
     for x in range(numIter):
+        hostrecurcount.append(0)
+        remoterecurcount.append(0)
+        devicerecurcount.append(0)
         working = []
         for i in range(numVertices):
             working.append(False)
 
         print("--- Host ---")
-        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "host", mainCut, numOutgoing, 1)
+        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "host", coherenceSymmetry, mainCut, numOutgoing, 1)
         print("--- Remote ---")
-        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "remote", remoteCut, numOutgoing, 1)
+        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "remote", coherenceSymmetry, remoteCut, numOutgoing, 1)
         print("--- Device ---")
-        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", deviceCut, numOutgoing, 1)
+        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", coherenceSymmetry, deviceCut, numOutgoing, 1)
+        
+        #print(ranks)
 
-    print(ranks)
-
-    #"""
+    """
     print(mainCut)
     print(remoteCut)
     print(deviceCut)
