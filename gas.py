@@ -153,8 +153,8 @@ def sampleGraph(name="small", size_chunk=100):
                 [7,8],
                 [8,1]]
         
-    #data = sorted(data, key=itemgetter(1))
-    random.shuffle(data)
+    data = sorted(data, key=itemgetter(1))
+    #random.shuffle(data)
     
     # -- Determine number of vertices in graph --
     #numVertices = 30
@@ -180,7 +180,6 @@ def genOutgoing(data, numVertices):
 # Partition given graph across 3 nodes: main, remote, device
 # Arguments [main, remote, device] must be floats between [0, 1] representing fraction of data they will hold
 def partitionGraph(data, numVertices, main, remote, device):
-    # Assuming 1 high-degree vertex for now...
 
     assert ((main + remote + device) < 1.1) and ((main + remote + device) > 0.9), "Main + remote + device must sum to 1.0"
 
@@ -197,62 +196,7 @@ def partitionGraph(data, numVertices, main, remote, device):
     remoteCut = sorted(remoteCut, key=itemgetter(1))
     deviceCut = sorted(deviceCut, key=itemgetter(1))
     
-    MR_shared = []
-    RD_shared = []
-    MD_shared = []
-    for v in range(numVertices):
-        if any(v in sublist for sublist in mainCut) and any(v in sublist for sublist in remoteCut):
-            MR_shared.append(1)
-        else:
-            MR_shared.append(0)
-        if any(v in sublist for sublist in remoteCut) and any(v in sublist for sublist in deviceCut):
-            RD_shared.append(1)
-        else:
-            RD_shared.append(0)
-        if any(v in sublist for sublist in mainCut) and any(v in sublist for sublist in deviceCut):
-            MD_shared.append(1)
-        else:
-            MD_shared.append(0)
-
-    """
-    MR_shared = []
-    RM_shared = []
-    RD_shared = []
-    DR_shared = []
-    MD_shared = []
-    DM_shared = []
-    for v in range(numVertices):
-        if (v in [row[0] for row in remoteCut]) and (v in [row[1] for row in mainCut]):
-            MR_shared.append(1)
-        else:
-            MR_shared.append(0)
-        if (v in [row[0] for row in mainCut]) and (v in [row[1] for row in remoteCut]):
-            RM_shared.append(1)
-        else:
-            RM_shared.append(0)
-        if (v in [row[0] for row in deviceCut]) and (v in [row[1] for row in remoteCut]):
-            RD_shared.append(1)
-        else:
-            RD_shared.append(0)
-        if (v in [row[0] for row in remoteCut]) and (v in [row[1] for row in deviceCut]):
-            DR_shared.append(1)
-        else:
-            DR_shared.append(0)
-        if (v in [row[0] for row in deviceCut]) and (v in [row[1] for row in mainCut]):
-            MD_shared.append(1)
-        else:
-            MD_shared.append(0)
-        if (v in [row[0] for row in mainCut]) and (v in [row[1] for row in deviceCut]):
-            DM_shared.append(1)
-        else:
-            DM_shared.append(0)
-    """
-    
-    #print(MR_shared)
-    #print(RD_shared)
-    #print(MD_shared)
-    
-    return mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared
+    return mainCut, remoteCut, deviceCut
 
 def writeDataTransfers_g(HR_count, RH_count, HD_count, DH_count, DR_count, RD_count):
     global host_g_code
@@ -263,9 +207,6 @@ def writeDataTransfers_g(HR_count, RH_count, HD_count, DH_count, DR_count, RD_co
     global prevhget
     global prevdget
 
-    #global numHSig
-    #global numRSig
-    #global numDSig
     global numHData
     global numRData
     global numDData
@@ -402,7 +343,7 @@ def writeDataTransfers_a(HR_count, RH_count, HD_count, DH_count, DR_count, RD_co
         dgetcount += 1
 
 # recursive portion of pagerank algorithm
-def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry):
+def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, isRecursion):
     global host_g_code
     global host_a_code
     global remote_g_code
@@ -464,9 +405,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
-                    #else:
-                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numDSig += 1
+
                 else:
                     print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
 
@@ -491,9 +430,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
-                    #else:
-                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numDSig += 1
+
                 else:
                     print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
 
@@ -520,9 +457,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numHSig += 1
-                    #else:
-                    #    device_g_code[-1] += "  host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numHSig += 1
+
                 else:
                     print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
                     
@@ -565,9 +500,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
-                    #else:
-                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numDSig += 1
+
             else: # 'I' state
                 print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE and wait for response".format(curr))
                 host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
@@ -575,9 +508,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                     host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                     host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                     numDSig += 1
-                #else:
-                #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                #numDSig += 1
+
                 if cached_remote[curr] == 'M':
                     print("\tRemote now at 'I' state. Send data REMOTE->HOST")
                     RH_count += 1
@@ -608,9 +539,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
-                    #else:
-                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numDSig += 1
+
             else: # 'I' state
                 if cached_host[curr] == 'I':
                     print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE".format(curr))
@@ -619,9 +548,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
-                    #else:
-                    #    host_g_code[-1] += "  device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numDSig += 1
+
                     print(cached_host)
                 else:
                     print("\tTransition vertex {} from 'I' to 'M' state.".format(curr))
@@ -657,9 +584,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                         device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                         device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numHSig += 1
-                    #else:
-                    #    device_g_code[-1] += "  host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                    #numHSig += 1
+
             else: # 'I' state
                 print("\tTransition vertex {} from 'I' to 'M' state. Send signal DEVICE->HOST".format(curr))
                 device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
@@ -667,9 +592,7 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
                     device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
                     device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                     numHSig += 1
-                #else:
-                #    device_g_code[-1] += "  host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE);\n"
-                #numHSig += 1
+
                 if cached_host[curr] == 'M':
                     print("\tHost now at 'I' state. Send data HOST->DEVICE") ### this and below are potential gridlock point
                     HD_count += 1
@@ -709,9 +632,8 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
         for i in range(prevhget, hgetcount):
             host_a_code[-1] += "  get" + str(i) + "->wait();\n"
         prevhget = hgetcount;
-        #host_a_code[-1] += "  simgrid::s4u::this_actor::execute(1); // to avoid segfault\n  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
         host_a_code[-1] += "  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
-        #host_a_code[-1] += "  pending_comms.clear();\n"
+        host_a_code[-1] += "  pending_comms.clear();\n"
         host_a_code[-1] += "\n  XBT_INFO(\"host perform computation\");\n"
         host_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(int(cost)) + ");\n\n"
     elif nodeType == "remote":
@@ -719,9 +641,8 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
         for i in range(prevhget, hgetcount):
             host_a_code[-1] += "\n  get" + str(i) + "->wait();\n"
         prevhget = hgetcount;
-        #host_a_code[-1] += "  simgrid::s4u::this_actor::execute(1); // to avoid segfault\n  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
         host_a_code[-1] += "  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
-        #host_a_code[-1] += "  pending_comms.clear();\n"
+        host_a_code[-1] += "  pending_comms.clear();\n"
         host_a_code[-1] += "\n  XBT_INFO(\"host perform computation on remote's behalf\");\n"
         host_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(int(cost)) + ");\n\n"
     elif nodeType == "device":
@@ -729,21 +650,24 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
         for i in range(prevdget, dgetcount):
             device_a_code[-1] += "\n  get" + str(i) + "->wait();\n"
         prevdget = dgetcount;
-        #device_a_code[-1] += "  simgrid::s4u::this_actor::execute(1); // to avoid segfault\n  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
         device_a_code[-1] += "  simgrid::s4u::Comm::wait_all(&pending_comms);\n"
-        #device_a_code[-1] += "  pending_comms.clear();\n"
+        device_a_code[-1] += "  pending_comms.clear();\n"
         device_a_code[-1] += "\n  XBT_INFO(\"device perform computation\");\n"
         device_a_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(int(cost)) + ");\n\n"
 
+    # prevent max recursion depth issue
+    if isRecursion:
+        return ranks, working, cached_host, cached_remote, cached_device
+        
     #for out in range(idx,len(graph)):
     for out in range(0,len(graph)):
         if graph[out][0] == curr and not done[graph[out][1]]:
             print("Scatter execution to vertex {}".format(graph[out][1]))
-            ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry)
+            ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, True)
     for out in range(0,len(graph)):
         if not done[graph[out][1]]:
              print("Scatter chain broken, searching for more unfinished vertices... {}".format(graph[out][1]))
-             ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry)
+             ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, True)
             
     return ranks, working, cached_host, cached_remote, cached_device
 
@@ -761,7 +685,7 @@ def PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_dev
     
     # assuming graph is sorted by DESTINATION ...
     startIdx = 0
-    ranks, working, cached_host, cached_remote, cached_device = PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry)
+    ranks, working, cached_host, cached_remote, cached_device = PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, False)
 
     return ranks, working, cached_host, cached_remote, cached_device
 
@@ -785,7 +709,7 @@ def generatePrefix(coherenceSymmetry):
 
     devicecode += "static void device(std::vector<std::string> args) {\n  xbt_assert(args.size() == 1, \"The device expects no argument.\");\n  simgrid::s4u::Mailbox* host_data_mailbox     = simgrid::s4u::Mailbox::by_name(\"host_data\");\n  simgrid::s4u::Mailbox* remote_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"remote_data\");\n  simgrid::s4u::Mailbox* device_data_mailbox   = simgrid::s4u::Mailbox::by_name(\"device_data\");\n  simgrid::s4u::Mailbox* host_sig_mailbox      = simgrid::s4u::Mailbox::by_name(\"host_sig\");\n  simgrid::s4u::Mailbox* device_sig_mailbox    = simgrid::s4u::Mailbox::by_name(\"device_sig\");\n  std::vector<simgrid::s4u::CommPtr> pending_comms;\n  std::vector<simgrid::s4u::CommPtr> noncrit_comms;\n\n  void* data = NULL;\n  void* signal = NULL;\n\n"
 
-def generateSuffix():
+def generateSuffix(coherenceSymmetry):
     global maincode
     global hostcode
     global remotecode
@@ -819,67 +743,73 @@ def generateSuffix():
 
     # Prime the signal reads and data sends
     data_size = 66
-    sf_avoid_period = 4
     for i in range(numHSig):
         hostcode += "  noncrit_comms.push_back(host_sig_mailbox->get_async(&signal));\n"
-        #if i % sf_avoid_period == 0 and i != 0:
-        #    hostcode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
     for i in range(numHSig, numHData + numHSig):
         hostcode += "  noncrit_comms.push_back(host_data_mailbox->put_async(dummy_data, " + str(data_size) + "));\n"
-        #if i % sf_avoid_period == 0 and i != 0:
-        #    hostcode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
     for i in range(numDSig):
         devicecode += "  noncrit_comms.push_back(device_sig_mailbox->get_async(&signal));\n"
-        #if i % sf_avoid_period == 0 and i != 0:
-        #    devicecode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
     for i in range(numDSig, numDData + numDSig):
         devicecode += "  noncrit_comms.push_back(device_data_mailbox->put_async(dummy_data, " + str(data_size) + "));\n"
-        #if i % sf_avoid_period == 0 and i != 0:
-        #    devicecode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
     for i in range(numRData):
         remotecode += "  noncrit_comms.push_back(remote_data_mailbox->put_async(dummy_data, " + str(data_size) + "));\n"
-        #if i % sf_avoid_period == 0:
-        #    remotecode += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
         
     for iteration in range(len(hostrecurcount)):
         if iteration == 0:
             offset = 0
         else:
             offset = sum(hostrecurcount[:iteration]) + sum(remoterecurcount[:iteration]) + sum(devicerecurcount[:iteration])
-        for i in range(max([hostrecurcount[iteration], remoterecurcount[iteration], devicerecurcount[iteration]])):
-            if i < hostrecurcount[iteration]:
-                hostcode += host_g_code[i + 0 + offset]
-                remotecode += remote_g_code[i + 0 + offset]
-                devicecode += device_g_code[i + 0 + offset]
-                #print(i + offset)
-            if i < remoterecurcount[iteration]:
-                hostcode += host_g_code[i + hostrecurcount[iteration] + offset]
-                remotecode += remote_g_code[i + hostrecurcount[iteration] + offset]
-                devicecode += device_g_code[i + hostrecurcount[iteration] + offset]
-                #print(i+hostrecurcount[iteration] + offset)
-            if i < devicerecurcount[iteration]:
-                hostcode += host_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
-                remotecode += remote_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
-                devicecode += device_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
-                #print(i+hostrecurcount[iteration]+remoterecurcount[iteration] + offset)
 
-            if i < hostrecurcount[iteration]:
-                hostcode += host_a_code[i + 0 + offset]
-            if i < remoterecurcount[iteration]:
-                remotecode += remote_a_code[i + hostrecurcount[iteration] + offset]
-            if i < devicerecurcount[iteration]:
-                devicecode += device_a_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+        if coherenceSymmetry == "asym_dev":
+            for i in range(max([hostrecurcount[iteration], remoterecurcount[iteration], devicerecurcount[iteration]])):
+                if i < devicerecurcount[iteration]:
+                    hostcode += host_g_code[i + 0 + offset]
+                    remotecode += remote_g_code[i + 0 + offset]
+                    devicecode += device_g_code[i + 0 + offset]
+                    #print(i + offset)
+                if i < hostrecurcount[iteration]:
+                    hostcode += host_g_code[i + devicerecurcount[iteration] + offset]
+                    remotecode += remote_g_code[i + devicerecurcount[iteration] + offset]
+                    devicecode += device_g_code[i + devicerecurcount[iteration] + offset]
+                    #print(i+devicerecurcount[iteration] + offset)
+                if i < remoterecurcount[iteration]:
+                    hostcode += host_g_code[i + hostrecurcount[iteration] + devicerecurcount[iteration] + offset]
+                    remotecode += remote_g_code[i + hostrecurcount[iteration] + devicerecurcount[iteration] + offset]
+                    devicecode += device_g_code[i + hostrecurcount[iteration] + devicecurcount[iteration] + offset]
+                    #print(i+hostrecurcount[iteration]+remoterecurcount[iteration] + offset)
+                
+                if i < devicerecurcount[iteration]:
+                    devicecode += device_a_code[i + 0 + offset]
+                if i < hostrecurcount[iteration]:
+                    hostcode += host_a_code[i + devicerecurcount[iteration] + offset]
+                if i < remoterecurcount[iteration]:
+                    remotecode += remote_a_code[i + devicerecurcount[iteration] + hostrecurcount[iteration] + offset]
+
+        else:
+            for i in range(max([hostrecurcount[iteration], remoterecurcount[iteration], devicerecurcount[iteration]])):
+                if i < hostrecurcount[iteration]:
+                    hostcode += host_g_code[i + 0 + offset]
+                    remotecode += remote_g_code[i + 0 + offset]
+                    devicecode += device_g_code[i + 0 + offset]
+                    #print(i + offset)
+                if i < remoterecurcount[iteration]:
+                    hostcode += host_g_code[i + hostrecurcount[iteration] + offset]
+                    remotecode += remote_g_code[i + hostrecurcount[iteration] + offset]
+                    devicecode += device_g_code[i + hostrecurcount[iteration] + offset]
+                    #print(i+hostrecurcount[iteration] + offset)
+                if i < devicerecurcount[iteration]:
+                    hostcode += host_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+                    remotecode += remote_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+                    devicecode += device_g_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
+                    #print(i+hostrecurcount[iteration]+remoterecurcount[iteration] + offset)
+                    
+                if i < hostrecurcount[iteration]:
+                    hostcode += host_a_code[i + 0 + offset]
+                if i < remoterecurcount[iteration]:
+                    remotecode += remote_a_code[i + hostrecurcount[iteration] + offset]
+                if i < devicerecurcount[iteration]:
+                    devicecode += device_a_code[i + hostrecurcount[iteration] + remoterecurcount[iteration] + offset]
     
-    """
-    for i in range(len(host_g_code)):
-        hostcode += host_g_code[i]
-        hostcode += host_a_code[i]
-        remotecode += remote_g_code[i]
-        remotecode += remote_a_code[i]
-        devicecode += device_g_code[i]
-        devicecode += device_a_code[i]
-    """
-
     hostcode += "\n  XBT_INFO(\"Host waiting on the barrier\");\n  simgrid::s4u::Comm::wait_all(&noncrit_comms);\n  barrier->wait();\n"
     hostcode += "  XBT_INFO(\"Host exiting.\");\n}"
     remotecode += "\n  XBT_INFO(\"Remote waiting on the barrier\");\n  simgrid::s4u::Comm::wait_all(&noncrit_comms);\n  barrier->wait();\n"
@@ -904,10 +834,10 @@ def main():
     global remoterecurcount
     global devicerecurcount
 
-    #coherenceSymmetry = "NAH"
-    coherenceSymmetry = "sym"
+    #coherenceSymmetry = "none"
+    #coherenceSymmetry = "sym"
     #coherenceSymmetry = "asym_host"
-    #coherenceSymmetry = "asym_dev"
+    coherenceSymmetry = "asym_dev"
     
     # start generating .cpp file
     generatePrefix(coherenceSymmetry)
@@ -917,11 +847,11 @@ def main():
     numOutgoing = genOutgoing(graph, numVertices)
 
     # -- Different workload cuts: evenly distributed, all host, all remote, all device --
-    #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 1.0/3.0, 1.0/3.0, 1.0/3.0)
-    mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 1.0/2.0, 0.0, 1.0/2.0)
-    #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 1.0, 0, 0)
-    #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 0, 1.0, 0)
-    #mainCut, remoteCut, deviceCut, MR_shared, RD_shared, MD_shared = partitionGraph(graph, numVertices, 0, 0, 1.0)
+    #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0/3.0, 1.0/3.0, 1.0/3.0)
+    mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0/2.0, 0.0, 1.0/2.0)
+    #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0, 0, 0)
+    #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 0, 1.0, 0)
+    #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 0, 0, 1.0)
 
     print(mainCut)
     
@@ -949,12 +879,17 @@ def main():
         for i in range(numVertices):
             working.append(False)
 
+        if coherenceSymmetry == "asym_dev":
+            print("--- Device ---")
+            ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", coherenceSymmetry, deviceCut, numOutgoing, 1)
+            
         print("--- Host ---")
         ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "host", coherenceSymmetry, mainCut, numOutgoing, 1)
         print("--- Remote ---")
         ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "remote", coherenceSymmetry, remoteCut, numOutgoing, 1)
-        print("--- Device ---")
-        ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", coherenceSymmetry, deviceCut, numOutgoing, 1)
+        if coherenceSymmetry != "asym_dev":
+            print("--- Device ---")
+            ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", coherenceSymmetry, deviceCut, numOutgoing, 1)
         
         #print(ranks)
 
@@ -962,14 +897,34 @@ def main():
     print(mainCut)
     print(remoteCut)
     print(deviceCut)
-    print(MR_shared)
-    print(RD_shared)
-    print(MD_shared)
     #"""
 
     # Complete .cpp file generation
-    generateSuffix()
+    generateSuffix(coherenceSymmetry)
 
+    # --- number of distinct vertices on each cut ---
+    mainSet = set(i for j in mainCut for i in j)
+    deviceSet = set(i for j in deviceCut for i in j)
+    print("Number of distinct vertices in Host: {}".format(len(mainSet)))
+    print("Number of distinct vertices in Device: {}".format(len(deviceSet)))
+
+    intersectS = mainSet.intersection(deviceSet)
+    unionS = mainSet.union(deviceSet)
+    print("Ratio of shared vertices between Host and Device: {}".format(float(len(intersectS)) / len(unionS)))
+
+    # --- number of distinct destinations on each cut ---
+    mainDest = set([i[1] for i in mainCut])
+    deviceDest = set([i[1] for i in deviceCut])
+    print("Number of distinct destinations in Host: {}".format(len(mainDest)))
+    print("Number of distinct destinations in Device: {}".format(len(deviceDest)))
+
+    intersectD = mainDest.intersection(deviceDest)
+    unionD = mainDest.union(deviceDest)
+    print("Ratio of shared destinations between Host and Device:{}".format(float(len(intersectD)) / len(unionD)))
+
+    print("Number of edges in Host: {}".format(len(mainCut)))
+    print("Number of edges in Device: {}".format(len(deviceCut)))
+    
 if __name__ == "__main__":
     main()
     
