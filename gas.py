@@ -5,8 +5,9 @@
 import math
 from operator import itemgetter
 import time
-import random
-random.seed(3)
+
+from util import *
+from smartPartition import *
 
 COMPUTE_ONCE = 7.152557373046875e-07
 FILLER_COMPUTE = 1
@@ -44,138 +45,6 @@ numDData = 0
 hostrecurcount = []
 remoterecurcount = []
 devicerecurcount = []
-
-# find max item in an arbitary depth of list of lists
-def get_max(my_list):
-    m = None
-    for item in my_list:
-        if isinstance(item, list):
-            item = get_max(item)
-        if not m or m < item:
-            m = item
-    return m
-
-# Generate sample graph using Adjacency List representation
-# outgoing: outgoing edges per vertex
-# incoming: incoming edges per vertex
-def sampleGraph(name="small", size_chunk=100):
-
-    if name == "large":
-        data = []
-        
-        # chunk 1
-        for i in range(1, size_chunk):
-            data.append([i, 0])
-            data.append([i, (i+1)%size_chunk])
-        data.append([0, 0+1])
-        data.append([0, size_chunk])
-
-        # chunk 2
-        for i in range(size_chunk+1, size_chunk*2):
-            data.append([i, size_chunk])
-            data.append([i, ((i+1)%size_chunk)+size_chunk])
-        data.append([size_chunk, size_chunk+1])
-        data.append([size_chunk, size_chunk*2])
-
-        # chunk 3
-        for i in range((size_chunk*2)+1, size_chunk*3):
-            data.append([i, size_chunk*2])
-            data.append([i, ((i+1)%size_chunk)+(size_chunk*2)])
-        data.append([size_chunk*2, (size_chunk*2)+1])
-        data.append([size_chunk*2, 0])
-
-    elif name == "count":
-        data = []
-        for i in range(size_chunk):
-            for j in range(i):
-                data.append([i, j])
-            data.append([i, (i+1)%size_chunk])
-
-    elif name == "v2":
-        data = []
-        for i in range(1, size_chunk):
-            data.append([i, 0])
-            if i < size_chunk-1:
-                data.append([i, i+1])
-            else:
-                data.append([i,1])
-        data.append([0, 1])
-            
-    elif name == "small":
-        data = [[1,0],
-                [2,0],
-                [3,0],
-                [4,0],
-                [5,0],
-                [6,0],
-                [7,0],
-                [8,0],
-                [9,0],
-                [0,10],
-                
-                [11,10],
-                [12,10],
-                [13,10],
-                [14,10],
-                [15,10],
-                [16,10],
-                [17,10],
-                [18,10],
-                [19,10],
-                [10,20],
-                
-                [21,20],
-                [22,20],
-                [23,20],
-                [24,20],
-                [25,20],
-                [26,20],
-                [27,20],
-                [28,20],
-                [29,20],
-                [20,0]]
-    else:
-        data = [[1,0],
-                [2,0],
-                [3,0],
-                [4,0],
-                [5,0],
-                [6,0],
-                [7,0],
-                [8,0],
-                [0,1],
-                [1,2],
-                [2,3],
-                [3,4],
-                [4,5],
-                [5,6],
-                [6,7],
-                [7,8],
-                [8,1]]
-        
-    data = sorted(data, key=itemgetter(1))
-    #random.shuffle(data)
-    
-    # -- Determine number of vertices in graph --
-    #numVertices = 30
-    #if name == "large":
-    #    numVertices = size_chunk*3
-    #else:
-    numVertices = get_max(data) + 1
-
-    return data, numVertices
-
-# Generate list for number of outgoing edges per node
-def genOutgoing(data, numVertices):
-    numOutgoing = []
-    for i in range(numVertices):
-        numOutgoing.append(0)
-
-    for e in data:
-        numOutgoing[e[0]] += 1
-
-    #print(numOutgoing)
-    return numOutgoing
 
 # Partition given graph across 3 nodes: main, remote, device
 # Arguments [main, remote, device] must be floats between [0, 1] representing fraction of data they will hold
@@ -393,29 +262,29 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
     compute_time = 0
     num_computes = 0
     
-    print("Accumulating for vertex {}".format(curr))
+    #print("Accumulating for vertex {}".format(curr))
     while(idx < len(graph) and graph[idx][1] == curr):
         HD_count = 0
         if nodeType == "host":
             if cached_host[graph[idx][0]] == 'I':
                 if cached_device[graph[idx][0]] != 'I': # only send coherence signals for SHARED DATA
-                    print("\tTransition vertex {} from 'I' to 'S' state. Send signal HOST->DEVICE".format(graph[idx][0])) ## force all device M to S
+                    #print("\tTransition vertex {} from 'I' to 'S' state. Send signal HOST->DEVICE".format(graph[idx][0])) ## force all device M to S
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
 
                 else:
-                    print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
-
+                    #print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
+                    pass
                 if cached_remote[graph[idx][0]] == 'M':
-                    print("\tRemote now at 'S' state. Send data REMOTE->HOST")
+                    #print("\tRemote now at 'S' state. Send data REMOTE->HOST")
                     RH_count += 1
                     cached_remote[graph[idx][0]] = 'S'
                     
                 elif cached_device[graph[idx][0]] == 'M':
-                    print("\tDevice now at 'S' state. Send data DEVICE->HOST")
+                    #print("\tDevice now at 'S' state. Send data DEVICE->HOST")
                     cached_device[graph[idx][0]] = 'S'
                     
                 cached_host[graph[idx][0]] = 'S'
@@ -424,49 +293,49 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
             ## remote memory always ejected from host after computation --> SLIGHTLY INCORRECT BEHAVIOR
             if cached_remote[graph[idx][0]] == 'I':
                 if cached_device[graph[idx][0]] != 'I': # only send coherence signals for SHARED DATA
-                    print("\tTransition vertex {} from 'I' to 'S' state. Send signal HOST->DEVICE".format(graph[idx][0])) ## force all device M to S
+                    #print("\tTransition vertex {} from 'I' to 'S' state. Send signal HOST->DEVICE".format(graph[idx][0])) ## force all device M to S
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
 
                 else:
-                    print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
-
+                    #print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
+                    pass
                 if cached_host[graph[idx][0]] == 'M':
                     cached_host[graph[idx][0]] = 'S'
                 elif cached_device[graph[idx][0]] == 'M':
-                    print("\tDevice now at 'S' state. Send data DEVICE->HOST")
+                    #print("\tDevice now at 'S' state. Send data DEVICE->HOST")
                     DH_count += 1
                     cached_device[graph[idx][0]] = 'S'
                 else: # special case for remote
-                    print("\tCaching vertex {} from remote memory. Send data REMOTE->HOST".format(graph[idx][0]))
+                    #print("\tCaching vertex {} from remote memory. Send data REMOTE->HOST".format(graph[idx][0]))
                     RH_count += 1
                 cached_remote[graph[idx][0]] = 'S'
             else: # special case for remote
-                print("\tCaching vertex {} from remote memory. Send data REMOTE->HOST".format(graph[idx][0]))
+                #print("\tCaching vertex {} from remote memory. Send data REMOTE->HOST".format(graph[idx][0]))
                 RH_count += 1
 
         elif nodeType == "device":
             if cached_device[graph[idx][0]] == 'I':
                 if cached_host[graph[idx][0]] != 'I' or cached_remote[graph[idx][0]] != 'I':
-                    print("\tTransition vertex {} from 'I' to 'S' state. Send signal DEVICE->HOST".format(graph[idx][0])) ## force all other devices and host M to S
+                    #print("\tTransition vertex {} from 'I' to 'S' state. Send signal DEVICE->HOST".format(graph[idx][0])) ## force all other devices and host M to S
                     device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_host":
                         device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numHSig += 1
 
                 else:
-                    print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
-                    
+                    #print("\tTransition vertex {} from 'I' to 'S' state.".format(graph[idx][0]))
+                    pass
                 if cached_host[graph[idx][0]] == 'M':
-                    print("\tHost now at 'S' state. Send data HOST->DEVICE")
+                    #print("\tHost now at 'S' state. Send data HOST->DEVICE")
                     HD_count += 1
                     cached_host[graph[idx][0]] = 'S'
                 if cached_remote[graph[idx][0]] == 'M':
-                    print("\tRemote now at 'S' state. Send data REMOTE->DEVICE")
+                    #print("\tRemote now at 'S' state. Send data REMOTE->DEVICE")
                     RD_count += 1
                     cached_remote[graph[idx][0]] = 'S'
                 cached_device[graph[idx][0]] = 'S'
@@ -492,34 +361,35 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
             
             if cached_host[curr] == 'S':
                 if cached_device[curr] == 'I':
-                    print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
+                    #print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
+                    pass
                 else:
-                    print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal HOST->DEVICE".format(curr))
+                    #print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal HOST->DEVICE".format(curr))
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
 
             else: # 'I' state
-                print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE and wait for response".format(curr))
+                #print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE and wait for response".format(curr))
                 host_g_code[-1] += "  XBT_INFO(\"host send invalidates\");\n"
                 if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
                     host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                    host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                    #host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                     numDSig += 1
 
                 if cached_remote[curr] == 'M':
-                    print("\tRemote now at 'I' state. Send data REMOTE->HOST")
+                    #print("\tRemote now at 'I' state. Send data REMOTE->HOST")
                     RH_count += 1
                 elif cached_device[curr] == 'M':
-                    print("\tDevice now at 'I' state. Send data DEVICE->HOST")
+                    #print("\tDevice now at 'I' state. Send data DEVICE->HOST")
                     DH_count += 1
                 elif cached_remote[curr] == 'S':
-                    print("\tRemote now at 'I' state. Send data REMOTE->HOST")
+                    #print("\tRemote now at 'I' state. Send data REMOTE->HOST")
                     RH_count += 1
                 elif cached_device[curr] == 'S':
-                    print("\tRemote now at 'I' state. Send data DEVICE->HOST")
+                    #print("\tRemote now at 'I' state. Send data DEVICE->HOST")
                     DH_count += 1
 
             cached_host[curr] = 'M'
@@ -531,40 +401,44 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
 
             if cached_remote[curr] == 'S':
                 if cached_device[curr] != 'I':
-                    print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
+                    #print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
+                    pass
                 else:
-                    print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal HOST->DEVICE".format(curr))
+                    #print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal HOST->DEVICE".format(curr))
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
 
             else: # 'I' state
                 if cached_host[curr] == 'I':
-                    print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE".format(curr))
+                    #print("\tTransition vertex {} from 'I' to 'M' state. Send signal HOST->DEVICE".format(curr))
                     host_g_code[-1] += "  XBT_INFO(\"host send invalidates on remote's behalf\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_dev":
                         host_g_code[-1] += "  pending_comms.push_back(device_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #host_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numDSig += 1
 
-                    print(cached_host)
+                    #print(cached_host)
                 else:
-                    print("\tTransition vertex {} from 'I' to 'M' state.".format(curr))
+                    #print("\tTransition vertex {} from 'I' to 'M' state.".format(curr))
+                    pass
                     
                 if cached_host[curr] == 'M':
-                    print("\tHost now at 'I' state.")
+                    #print("\tHost now at 'I' state.")
+                    pass
                 elif cached_device[curr] == 'M':
-                    print("\tDevice now at 'I' state. Send data DEVICE->HOST")
+                    #print("\tDevice now at 'I' state. Send data DEVICE->HOST")
                     DH_count += 1
                 elif cached_host[curr] == 'S':
-                    print("\tHost now at 'I' state.")
+                    #print("\tHost now at 'I' state.")
+                    pass
                 elif cached_device[curr] == 'S':
-                    print("\tRemote now at 'I' state. Send data DEVICE->HOST")
+                    #print("\tRemote now at 'I' state. Send data DEVICE->HOST")
                     DH_count += 1
                 else: # special state only for remote
-                    print("\tRetrieve vertex {} from remote memory. Send data REMOTE->HOST".format(curr))
+                    #print("\tRetrieve vertex {} from remote memory. Send data REMOTE->HOST".format(curr))
                     RH_count += 1
 
             cached_host[curr] = 'I'
@@ -576,41 +450,42 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
 
             if cached_device[curr] == 'S':
                 if cached_host[curr] == 'I' and cached_remote[curr] == 'I':
-                    print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
+                    #print("\tTransition vertex {} from 'S' to 'M' state.".format(curr))
+                    pass
                 else:
-                    print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal DEVICE->HOST".format(curr))
+                    #print("\tTransition vertex {} from 'S' to 'M' state. Send invalidate signal DEVICE->HOST".format(curr))
                     device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
                     if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_host":
                         device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                        device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                        #device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                         numHSig += 1
 
             else: # 'I' state
-                print("\tTransition vertex {} from 'I' to 'M' state. Send signal DEVICE->HOST".format(curr))
+                #print("\tTransition vertex {} from 'I' to 'M' state. Send signal DEVICE->HOST".format(curr))
                 device_g_code[-1] += "  XBT_INFO(\"device send invalidates\");\n"
                 if coherenceSymmetry == "sym" or coherenceSymmetry == "asym_host":
                     device_g_code[-1] += "  pending_comms.push_back(host_sig_mailbox->put_async(dummy_data, SNOOP_SIZE));\n"
-                    device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
+                    #device_g_code[-1] += "  simgrid::s4u::this_actor::execute(" + str(FILLER_COMPUTE) + "); // to avoid segfault\n"
                     numHSig += 1
 
                 if cached_host[curr] == 'M':
-                    print("\tHost now at 'I' state. Send data HOST->DEVICE") ### this and below are potential gridlock point
+                    #print("\tHost now at 'I' state. Send data HOST->DEVICE") ### this and below are potential gridlock point
                     HD_count += 1
                 elif cached_remote[curr] == 'M':
-                    print("\tRemote now at 'I' state. Send data REMOTE->DEVICE") ### this and above are potential gridlock point
+                    #print("\tRemote now at 'I' state. Send data REMOTE->DEVICE") ### this and above are potential gridlock point
                     RD_count += 1
                 elif cached_host[curr] == 'S':
-                    print("\tHost now at 'I' state. Send data HOST->DEVICE") ### this and below are potential gridlock point
+                    #print("\tHost now at 'I' state. Send data HOST->DEVICE") ### this and below are potential gridlock point
                     HD_count += 1
                 elif cached_remote[curr] == 'S':
-                    print("\tRemote now at 'I' state. Send data REMOTE->DEVICE") ### this and above are potential gridlock point
+                    #print("\tRemote now at 'I' state. Send data REMOTE->DEVICE") ### this and above are potential gridlock point
                     RD_count += 1
 
             cached_host[curr] = 'I'
             cached_remote[curr] = 'I'
             cached_device[curr] = 'M'
 
-    print("COMPUTE: Update rank of vertex {}".format(curr))
+    #print("COMPUTE: Update rank of vertex {}".format(curr))
     startTime = time.time()
     if not working[curr]:
         ranks[curr] = tot
@@ -662,11 +537,11 @@ def PR(graph, startIdx, numOutgoing, ranks, done, working, cached_host, cached_r
     #for out in range(idx,len(graph)):
     for out in range(0,len(graph)):
         if graph[out][0] == curr and not done[graph[out][1]]:
-            print("Scatter execution to vertex {}".format(graph[out][1]))
+            #print("Scatter execution to vertex {}".format(graph[out][1]))
             ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, True)
     for out in range(0,len(graph)):
         if not done[graph[out][1]]:
-             print("Scatter chain broken, searching for more unfinished vertices... {}".format(graph[out][1]))
+             #print("Scatter chain broken, searching for more unfinished vertices... {}".format(graph[out][1]))
              ranks, working, cached_host, cached_remote, cached_device = PR(graph, out, numOutgoing, ranks, done, working, cached_host, cached_remote, cached_device, nodeType, coherenceSymmetry, True)
             
     return ranks, working, cached_host, cached_remote, cached_device
@@ -733,10 +608,10 @@ def generateSuffix(coherenceSymmetry):
     global numRData
     global numDData
     
-    print("Counts: ")
-    print(hostrecurcount)
-    print(remoterecurcount)
-    print(devicerecurcount)
+    #print("Counts: ")
+    #print(hostrecurcount)
+    #print(remoterecurcount)
+    #print(devicerecurcount)
     #print(host_a_code);
     #print(remote_a_code);
     #print(device_a_code);
@@ -834,26 +709,55 @@ def main():
     global remoterecurcount
     global devicerecurcount
 
-    #coherenceSymmetry = "none"
-    #coherenceSymmetry = "sym"
-    #coherenceSymmetry = "asym_host"
-    coherenceSymmetry = "asym_dev"
+    SMART_PARTITION = True
+    RANDOMIZE = False
     
+    #coherenceSymmetry = "none"
+    #coherenceSymmetry = "sym" #--------------
+    ####coherenceSymmetry = "asym_host"
+    coherenceSymmetry = "asym_dev" #---------------
+
+    """
+    if SMART_PARTITION:
+        coherenceSymmetry = "asym_dev"
+        RANDOMIZE = False
+    """
+ 
     # start generating .cpp file
     generatePrefix(coherenceSymmetry)
     
-    graph, numVertices = sampleGraph("large", 100)
+    #graph, numVertices = sampleGraph("large", 10)
+    graph, numVertices = sampleGraph("natural", 1000, randomize=RANDOMIZE)
+    #graph, numVertices = sampleGraph("v3", 100)
     #print(graph)
     numOutgoing = genOutgoing(graph, numVertices)
 
     # -- Different workload cuts: evenly distributed, all host, all remote, all device --
     #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0/3.0, 1.0/3.0, 1.0/3.0)
-    mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0/2.0, 0.0, 1.0/2.0)
+    if not SMART_PARTITION:
+        mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0/2.0, 0.0, 1.0/2.0)
     #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 1.0, 0, 0)
     #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 0, 1.0, 0)
     #mainCut, remoteCut, deviceCut = partitionGraph(graph, numVertices, 0, 0, 1.0)
 
-    print(mainCut)
+    # ---------------------- smart partition #
+    if SMART_PARTITION:
+        remoteCut = []
+        mainCut, deviceCut = smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry, relativeDevComputeCapability=1.0)
+    # -------------------------------------- #
+
+    """
+    # ---------------------- PowerGraph greedy partition #
+    #remoteCut = []
+    #mainCut, deviceCut = greedyPartition(graph)
+    # ---------------------- S-PowerGraph DegreeIO ----- #
+    #remoteCut = []
+    #mainCut, deviceCut = DegreeIO(graph, numVertices, numOutgoing)
+    # -------------------------------------------------- #
+    """
+
+    #print(mainCut)
+    #print(deviceCut)
     
     # initial ranks
     initRank = 1.0 / numVertices
@@ -879,7 +783,7 @@ def main():
         for i in range(numVertices):
             working.append(False)
 
-        if coherenceSymmetry == "asym_dev":
+        if False: #SMART_PARTITION:
             print("--- Device ---")
             ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", coherenceSymmetry, deviceCut, numOutgoing, 1)
             
@@ -887,7 +791,7 @@ def main():
         ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "host", coherenceSymmetry, mainCut, numOutgoing, 1)
         print("--- Remote ---")
         ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "remote", coherenceSymmetry, remoteCut, numOutgoing, 1)
-        if coherenceSymmetry != "asym_dev":
+        if True: #not SMART_PARTITION:
             print("--- Device ---")
             ranks, working, cached_host, cached_remote, cached_device = PageRank(ranks, numVertices, working, cached_host, cached_remote, cached_device, "device", coherenceSymmetry, deviceCut, numOutgoing, 1)
         
@@ -900,7 +804,10 @@ def main():
     #"""
 
     # Complete .cpp file generation
-    generateSuffix(coherenceSymmetry)
+    if False: #SMART_PARTITION:
+        generateSuffix("asym_dev") #coherenceSymmetry)
+    else:
+        generateSuffix("asym_host")
 
     # --- number of distinct vertices on each cut ---
     mainSet = set(i for j in mainCut for i in j)
@@ -922,8 +829,12 @@ def main():
     unionD = mainDest.union(deviceDest)
     print("Ratio of shared destinations between Host and Device:{}".format(float(len(intersectD)) / len(unionD)))
 
+    print("Total number of edges: {}".format(len(graph)))
     print("Number of edges in Host: {}".format(len(mainCut)))
     print("Number of edges in Device: {}".format(len(deviceCut)))
+
+    print("COPY+PASTE:")
+    print([len(mainSet), len(deviceSet), float(len(intersectS)) / len(unionS), len(mainDest), len(deviceDest), float(len(intersectD)) / len(unionD), len(mainCut), len(deviceCut)])
     
 if __name__ == "__main__":
     main()

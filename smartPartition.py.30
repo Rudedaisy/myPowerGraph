@@ -1,0 +1,401 @@
+import math
+from operator import itemgetter
+from util import *
+
+
+def genIncoming(graph, numVertices):
+    numIncoming = []
+    for i in range(numVertices):
+        numIncoming.append(0)
+        
+    for e in graph:
+        numIncoming[e[1]] += 1
+        
+    #print(numIncoming)
+    return numIncoming
+
+def checkDest(dest, hostCut, deviceCut):
+    if dest in [edge[1] for edge in hostCut]:
+        # destination already exists in Host
+        destInHost = True
+    else:
+        destInHost = False
+    if dest in [edge[1] for edge in deviceCut]:
+        # destination already exists in Device
+        destInDevice = True
+    else:
+        destInDevice = False
+        
+    return destInHost, destInDevice
+
+def checkVertex(v, cut):
+    if v in [edge[0] for edge in cut]:
+        return True
+    if v in [edge[1] for edge in cut]:
+        return True
+    return False
+
+def smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry="asym_dev", relativeDevComputeCapability=1.0):
+    # sort by destination; with each destination sorted by source
+    graph = sorted(graph, key=itemgetter(0))
+    graph = sorted(graph, key=itemgetter(1))
+
+    """
+    -- identify high-degree vertices
+    1) partition low-degree vertices first
+    2) high-degree vertices act as the balancing agent (i.e. doesn't impact dests, but impacts #vertices, sharedVertices, and edges
+    """
+
+    # balance factor for compute capability between host and device
+    deviceBeta = relativeDevComputeCapability / (relativeDevComputeCapability + 1.0)
+    hostBeta = 1.0 - deviceBeta
+    OVERRIDE = 0.423 #0.425 #0.42 #0.43
+    hostBeta = OVERRIDE
+    
+    hostDests = 0
+    deviceDests = 0
+    hostCut = []
+    deviceCut = []
+    
+    destInHost = False
+    destInDevice = False
+    
+    # find the high-degree vertices
+    numIncoming = genIncoming(graph, numVertices)
+    HIGH_DEGREE = 0.1
+    highDegrees = []
+    lenGraph = len(graph)
+    for e_idx in range(len(graph)-1,-1,-1):
+        if numIncoming[graph[e_idx][1]] > HIGH_DEGREE*lenGraph:
+            highDegrees.append(graph[e_idx])
+            del graph[e_idx]
+
+    # because graph is sorted, can simply form a big partition (with a tolerance equal to ~x definition of HIGH_DEGREE)
+    TOL_GAP_SCALE = 2
+    lowerBound = int(len(graph) * (hostBeta - (TOL_GAP_SCALE*HIGH_DEGREE/2)))
+    upperBound = int(math.ceil(len(graph) * (hostBeta + (TOL_GAP_SCALE*HIGH_DEGREE/2))))
+    hostCut = graph[:lowerBound]
+    deviceCut = graph[upperBound:]
+
+    destID = -1
+    for e in hostCut:
+        if destID != e[1]:
+            hostDests += 1
+            destID = e[1]
+    destID = -1
+    for e in deviceCut:
+        if destID != e[1]:
+            deviceDests += 1
+            destID = e[1]
+    
+    # arbitrate the middle portion of edges
+    for e in graph[lowerBound:upperBound]:
+        destInHost, destInDevice = checkDest(e[1], hostCut, deviceCut)
+        
+        if abs(len(hostCut) - len(deviceCut)) < (0.3 * len(graph)):
+            numHostCommon = checkVertex(e[0], hostCut) + int(destInHost)
+            numDeviceCommon = checkVertex(e[0], deviceCut) + int(destInDevice)
+
+            # reduce number of shared vertices
+            if numHostCommon > numDeviceCommon:
+                hostCut.append(e)
+                if not destInHost:
+                    hostDests += 1
+            elif numDeviceCommon > numHostCommon:
+                deviceCut.append(e)
+                if not destInDevice:
+                    deviceDests += 1
+            else:
+                # reduce number of unique destinations
+                if destInDevice: # assuming dev is more compute_capable...
+                    deviceCut.append(e)
+                    if not destInDevice:
+                        deviceDests += 1
+                elif destInHost:
+                    hostCut.append(e)
+                    if not destInHost:
+                        hostDests += 1
+                else:
+                    # assuming asym_dev...
+                    deviceCut.append(e)
+                    if not destInDevice:
+                        deviceDests += 1
+        else:
+            if len(hostCut) < len(deviceCut):
+                hostCut.append(e)
+                if not destInHost:
+                    hostDests += 1
+            else:
+                deviceCut.append(e)
+                if not destInDevice:
+                    deviceDests += 1
+            
+    for e in highDegrees:
+        destInHost, destInDevice = checkDest(e[1], hostCut, deviceCut)
+        
+        if checkVertex(e[0], hostCut) and not checkVertex(e[0], deviceCut): # and (abs(len(hostCut) - len(deviceCut)) < 2):
+            hostCut.append(e)
+            if not destInHost:
+                hostDests += 1
+        elif checkVertex(e[0], deviceCut) and not checkVertex(e[0], hostCut): # and (abs(len(hostCut) - len(deviceCut)) < 2):
+            deviceCut.append(e)
+            if not destInDevice:
+                deviceDests += 1
+        else:
+            if len(hostCut) < len(deviceCut):
+                hostCut.append(e)
+                if not destInHost:
+                    hostDests += 1
+            else:
+                deviceCut.append(e)
+                if not destInDevice:
+                    deviceDests += 1
+
+
+    hostCut = sorted(hostCut, key=itemgetter(0))
+    hostCut = sorted(hostCut, key=itemgetter(1))
+    deviceCut = sorted(deviceCut, key=itemgetter(0))
+    deviceCut = sorted(deviceCut, key=itemgetter(1))
+    return hostCut, deviceCut
+    
+def smartPartition_OLD3(graph, numVertices, numOutgoing, coherenceSymmetry="asym_dev", relativeDevComputeCapability=1.0):
+    # sort by destination; with each destination sorted by source
+    graph = sorted(graph, key=itemgetter(0))
+    graph = sorted(graph, key=itemgetter(1))
+
+    numIncoming = genIncoming(graph, numVertices)
+    
+    """
+    More holistic approach
+    -- consider the number of source edges leading to a destination edge
+    -- it is OK to break-up high-degree vertices
+    -- if not high-degree vertex, then better to send to partition with less communication overhead
+    """
+
+    hostDests = 0
+    deviceDests = 0
+    hostCut = []
+    deviceCut = []
+    
+    destInHost = False
+    destInDevice = False
+
+    HIGH_DEGREE = 0.1
+    
+    for e_idx, e in enumerate(graph):
+        destInHost, destInDevice = checkDest(e[1], hostCut, deviceCut)
+        
+        if numIncoming[e[1]] > HIGH_DEGREE*len(graph):
+            # high degree vertex... good to spread across partitions
+            if checkVertex(e[0], hostCut) and not checkVertex(e[0], deviceCut): # and (abs(len(hostCut) - len(deviceCut)) < 2):
+                hostCut.append(e)
+                if not destInHost:
+                    hostDests += 1
+            elif checkVertex(e[0], deviceCut) and not checkVertex(e[0], hostCut): # and (abs(len(hostCut) - len(deviceCut)) < 2):
+                deviceCut.append(e)
+                if not destInDevice:
+                    deviceDests += 1
+            else:
+                if len(hostCut) < len(deviceCut):
+                    hostCut.append(e)
+                    if not destInHost:
+                        hostDests += 1
+                else:
+                    deviceCut.append(e)
+                    if not destInDevice:
+                        deviceDests += 1
+            continue
+
+        if destInHost:
+            hostCut.append(e)
+            if not destInHost:
+                hostDests += 1
+        elif destInDevice:
+            deviceCut.append(e)
+            if not destInDevice:
+                deviceDests += 1
+        else:
+            if coherenceSymmetry=="asym_dev":
+                if deviceDests < 1.0*hostDests and checkVertex(e[0], deviceCut):
+                    deviceCut.append(e)
+                    if not destInDevice:
+                        deviceDests += 1
+                elif deviceDests > 1.0*hostDests and checkVertex(e[0], hostCut):
+                    hostCut.append(e)
+                    if not destInHost:
+                        hostDests += 1
+                elif deviceDests > 1.7*hostDests:
+                    hostCut.append(e)
+                    if not destInHost:
+                        hostDests += 1
+                else:
+                    deviceCut.append(e)
+                    if not destInDevice:
+                        deviceDests += 1
+            else:
+                assert False, "state not supported yet"
+                
+    return hostCut, deviceCut
+    
+def smartPartition_OLD2(graph, numVertices, numOutgoing, coherenceSymmetry="sym", relativeDevComputeCapability=1.0):
+    # sort by destination; with each destination sorted by source
+    graph = sorted(graph, key=itemgetter(0))
+    graph = sorted(graph, key=itemgetter(1))
+
+    """
+    Greedy algorithm...
+    1) Prioritize minimizing shared vertices
+    2) Place new unique destinations towards the biased-node
+    3) Number of edges tuned to account for compute-capability
+    """
+
+    # balance factor for compute capability between host and device
+    deviceBeta = relativeDevComputeCapability / (relativeDevComputeCapability + 1.0)
+    hostBeta = 1.0 - deviceBeta
+
+    hostDests = 0
+    deviceDests = 0
+    hostCut = []
+    deviceCut = []
+    
+    destInHost = False
+    destInDevice = False
+    
+    for e in graph:
+        destInHost, destInDevice = checkDest(e[1], hostCut, deviceCut)
+
+        numHostCommon = checkVertex(e[0], hostCut) + int(destInHost)
+        numDeviceCommon = checkVertex(e[0], deviceCut) + int(destInDevice)
+
+        if (abs(len(hostCut) - len(deviceCut)) < 20) and numHostCommon > numDeviceCommon:
+            hostCut.append(e)
+            if not destInHost:
+                hostDests += 1
+        elif (abs(len(hostCut) - len(deviceCut)) < 20) and numDeviceCommon > numHostCommon:
+            deviceCut.append(e)
+            if not destInDevice:
+                deviceDests += 1
+        else:
+            # sharedVertices not impacted by adding to either partition
+            # now minimize total number of unique destinations
+            if (abs(len(hostCut) - len(deviceCut)) < 20) and destInHost and (not destInDevice):
+                hostCut.append(e)
+            elif (abs(len(hostCut) - len(deviceCut)) < 20) and destInDevice and (not destInHost):
+                deviceCut.append(e)
+            else:
+                # number of unique destinations not impact by adding to either partition
+                # now check for 2nd priority
+                if (abs(len(hostCut) - len(deviceCut)) < 20) and coherenceSymmetry=="asym_host":
+                    hostCut.append(e)
+                    if not destInHost:
+                        hostDests += 1
+                elif (abs(len(hostCut) - len(deviceCut)) < 20) and coherenceSymmetry=="asym_dev":
+                    deviceCut.append(e)
+                    if not destInDevice:
+                        deviceDests += 1
+                else:
+                    # symmetric coherence... try to balance number of unique destinations
+                    if hostDests <= deviceDests:
+                        hostCut.append(e)
+                        if not destInHost:
+                            hostDests += 1
+                    else:
+                        deviceCut.append(e)
+                        if not destInDevice:
+                            deviceDests += 1
+                            
+    return hostCut, deviceCut
+    
+def smartPartition_OLD1(graph, numVertices, numOutgoing, coherenceSymmetry="sym", relativeDevComputeCapability=1.0):
+    # sort by destination; with each destination sorted by source
+    graph = sorted(graph, key=itemgetter(0))
+    graph = sorted(graph, key=itemgetter(1))
+
+    """
+    Greedy algorithm to:
+    1) Balance number of unique destination vertices towards the coherence-biased
+    2) Balance number of edges towards compute-capability
+    3) Lower number of shared vertices ?? <- don't know how to optimize for this
+    """
+
+    # temporary tuning knob for balancing coherenceSymetry
+    # alpha: ratio of Device's unique destination count relative to Host's
+    if coherenceSymmetry == "sym":
+        alpha = 1.0
+    elif coherenceSymmetry == "asym_host":
+        alpha = 0.75
+    elif coherenceSymmetry == "asym_dev":
+        alpha = 1.33
+
+    # balance factor for compute capability between host and device
+    deviceBeta = relativeDevComputeCapability / (relativeDevComputeCapability + 1.0)
+    hostBeta = 1.0 - deviceBeta
+    
+    hostDests = 0
+    deviceDests = 0
+    hostCut = []
+    deviceCut = []
+
+    destInHost = False
+    destInDevice = False
+    for e in graph:
+        destInHost, destInDevice = checkDest(e[1], hostCut, deviceCut)
+
+        if (not destInHost) and (not destInDevice):
+            # destination in neither host nor device; give to node with less edges; MAY WANT TO CHECK SHARED VERTICES COUNT
+            if checkVertex(e[0], hostCut):
+                if len(hostCut) <= hostBeta*len(graph):
+                    hostCut.append(e)
+                else:
+                    deviceCut.append(e)
+            elif checkVertex(e[0], deviceCut):
+                if len(deviceCut) <= deviceBeta*len(graph):
+                    deviceCut.append(e)
+                else:
+                    hostCut.append(e)
+            else:
+                if len(hostCut) <= relativeDevComputeCapability*float(len(deviceCut)):
+                    hostCut.append(e)
+                else:
+                    deviceCut.append(e)
+        elif destInHost and destInDevice:
+            # destination in both host and device; give to node with less edges; MAY WANT TO CHECK SHARED VERTICES COUNT
+            if checkVertex(e[0], hostCut):
+                if len(hostCut) <= hostBeta*len(graph):
+                    hostCut.append(e)
+                else:
+                    deviceCut.append(e)
+            elif checkVertex(e[0], deviceCut):
+                if len(deviceCut) <= deviceBeta*len(graph):
+                    deviceCut.append(e)
+                else:
+                    hostCut.append(e)
+            else:
+                if len(hostCut) <= relativeDevComputeCapability*float(len(deviceCut)):
+                    hostCut.append(e)
+                else:
+                    deviceCut.append(e)
+        elif destInHost:
+            # destination only in host; want to add edge to host IF number of edges balanced
+            if len(hostCut) <= hostBeta*len(graph):
+                hostCut.append(e)
+            else:
+                deviceCut.append(e)
+        elif destInDevice:
+            # destination only in device; want to add edge to device IF number of edges balanced
+            if len(deviceCut) <= deviceBeta*len(graph):
+                deviceCut.append(e)
+            else:
+                hostCut.append(e)
+
+    return hostCut, deviceCut
+
+"""
+def main():
+    graph, numVertices = sampleGraph("large", 100)
+    numOutgoing = genOutgoing(graph, numVertices)
+    numIncoming = genIncoming(graph, numVertices)
+    
+    smartPartition(graph, numVertices, numOutgoing, "sym", 1.0)
+""" 
+#main()
