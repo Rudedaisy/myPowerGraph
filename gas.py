@@ -9,7 +9,14 @@ import time
 from util import *
 from smartPartition import *
 
+#COMPUTE_ONCE = 1e-8
+#COMPUTE_ONCE = 1e-7
+#COMPUTE_ONCE = 5e-7
 COMPUTE_ONCE = 7.152557373046875e-07
+#COMPUTE_ONCE = 1e-6
+#COMPUTE_ONCE = 4.9e-6
+#COMPUTE_ONCE = 1e-5
+
 FILLER_COMPUTE = 1
 
 # -- These strings are for generating .cpp code for simgrid --
@@ -743,10 +750,10 @@ def main():
     # ---------------------- smart partition #
     if SMART_PARTITION:
         remoteCut = []
-        mainCut, deviceCut = smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry, relativeDevComputeCapability=1.0)
+        mainCut, deviceCut = smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry, relativeDevComputeCapability=1.0, COMPUTE_ONCE=COMPUTE_ONCE)
     # -------------------------------------- #
 
-    """
+    #"""
     # ---------------------- PowerGraph greedy partition #
     #remoteCut = []
     #mainCut, deviceCut = greedyPartition(graph)
@@ -754,7 +761,7 @@ def main():
     #remoteCut = []
     #mainCut, deviceCut = DegreeIO(graph, numVertices, numOutgoing)
     # -------------------------------------------------- #
-    """
+    #"""
 
     #print(mainCut)
     #print(deviceCut)

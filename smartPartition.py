@@ -5,12 +5,20 @@ from util import *
 import random
 random.seed(1)
 
-COMPUTE_ONCE = 7.152557373046875e-07
+#IO_LATENCY = 0.01e-6
+#IO_LATENCY = 0.05e-6
+#IO_LATENCY = 0.1e-6
+#IO_LATENCY = 0.25e-6
+IO_LATENCY = 0.5e-6
+#IO_LATENCY = 0.75e-6
+#IO_LATENCY = 1e-6
+#IO_LATENCY = 2e-6
+#IO_LATENCY = 4e-6
 
-BETA_0_MULTIPLIER = 5.5 #3
+BETA_0_MULTIPLIER = 1.0 #3
 BETA_1 = "NA" #"NA"
-BETA_2_MULTIPLIER = 1 #1
-LAMBDA = 0.3 #0.3
+BETA_2_MULTIPLIER = 1.0 #1
+LAMBDA = 0.05 #0.3
 
 def genIncoming(graph, numVertices):
     numIncoming = []
@@ -167,7 +175,7 @@ def greedyPartition(graph):
     deviceCut = sorted(deviceCut, key=itemgetter(1))
     return hostCut, deviceCut
 
-def smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry="asym_dev", relativeDevComputeCapability=1.0):
+def smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry="asym_dev", relativeDevComputeCapability=1.0, COMPUTE_ONCE="NA"):
     # sort by destination; with each destination sorted by source
     graph = sorted(graph, key=itemgetter(0))
     graph = sorted(graph, key=itemgetter(1))
@@ -190,7 +198,7 @@ def smartPartition(graph, numVertices, numOutgoing, coherenceSymmetry="asym_dev"
     #hostBeta = (COMPUTE_ONCE * avgDegree) / (2*COMPUTE_ONCE*avgDegree + 0.5e-6)
     if BETA_1 == "NA":
         """ beta_1 """
-        hostBeta = (COMPUTE_ONCE * avgDegree + 0.5e-6) / (2*COMPUTE_ONCE*avgDegree + 0.5e-6 + 30e-9)
+        hostBeta = (COMPUTE_ONCE * avgDegree + IO_LATENCY) / (2*COMPUTE_ONCE*avgDegree + IO_LATENCY + 30e-9)
         hostBeta = 1 - hostBeta
     else:
         hostBeta = BETA_1
